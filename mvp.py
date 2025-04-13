@@ -38,4 +38,21 @@ messages=[
         "type": "json_object"
     }
 )
-print(response.choices[0].message.content)
+result = response.choices[0].message.content
+
+# 3. AI의 판단에 따라 실제로 자동매매 진행하기
+import json
+result = json.loads(result)
+access = os.getenv("BITHUMB_ACCESS_KEY")
+secret = os.getenv("BITHUMB_SECRET_KEY")
+bithumb = python_bithumb.Bithumb(access, secret)
+
+print("Decision:", result["decision"])
+print("Reason:", result["reason"])
+
+if result["decision"] == "buy":
+    print(bithumb.buy_market_order("KRW-BTC", 10000))
+elif result["decision"] == "sell":
+    print(bithumb.sell_market_order("KRW-BTC", 0.0000669 * 0.997))
+else:
+    print("No action taken.")

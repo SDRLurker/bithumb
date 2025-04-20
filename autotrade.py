@@ -5,11 +5,35 @@ import pandas as pd
 import json
 from openai import OpenAI
 import time
+import ta
+from ta.utils import dropna
 
 load_dotenv()
 
+def add_indicators(df):
+    # 볼린저 밴드
+    indicator_bb = ta.volatility.BollingerBands(close=df['close'], window=20, window_dev=2)
+    df['bb_bbm'] = indicator_bb.bollinger_mavg()
+    df['bb_bbh'] = indicator_bb.bollinger_hband()
+    df['bb_bbl'] = indicator_bb.bollinger_lband()
+
+    # RSI
+    df['rsi'] = ta.momentum.RSIIndicator(close=df['close'], window=14).rsi()
+
+    # MACD
+    macd = ta.trend.MACD(close=df['close'])
+    df['macd'] = macd.macd()
+    df['macd_signal'] = macd.macd_signal()
+    df['macd_diff'] = macd.macd_diff()
+
+    # 이동평균선
+    df['sma_20'] = ta.trend.SMAIndicator(close=df['close'], window=20).sma_indicator()
+    df['ema_12'] = ta.trend.EMAIndicator(close=df['close'], window=12).ema_indicator()
+
+    return df
+
 def ai_trading():
-    # Upbit 객체 생성
+    # Bithumb 객체 생성
     access = os.getenv("BITHUMB_ACCESS_KEY")
     secret = os.getenv("BITHUMB_SECRET_KEY")
     bithumb = python_bithumb.Bithumb(access, secret)
@@ -24,9 +48,13 @@ def ai_trading():
     # 3. 차트 데이터 조회 및 보조지표 추가
     # 30일 일봉 데이터
     df_daily = python_bithumb.get_ohlcv("KRW-BTC", interval="day", count=30)
+    df_daily = dropna(df_daily)
+    df_daily = add_indicators(df_daily)
     
     # 24시간 시간봉 데이터
     df_hourly = python_bithumb.get_ohlcv("KRW-BTC", interval="minute60", count=24)
+    df_hourly = dropna(df_hourly)
+    df_hourly = add_indicators(df_hourly)
 
     # AI에게 데이터 제공하고 판단 받기
     API_KEY = os.getenv("GEMINI_API_KEY")

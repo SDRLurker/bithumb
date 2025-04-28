@@ -7,6 +7,7 @@ from openai import OpenAI
 import time
 import ta
 from ta.utils import dropna
+import time
 
 load_dotenv()
 
@@ -116,6 +117,9 @@ def ai_trading():
         print("### Hold Position ###")
 
 while True:
-    import time
-    time.sleep(10)
-    ai_trading()
+    try:
+        ai_trading()
+        time.sleep(600) # 10분 간격으로 실행(너무 빈번한 API 호출 방지)
+    except Exception as e:
+        print(f"An error occurred: {e}")
+        time.sleep(60) # 오류 발생 시 1분 후 재시도

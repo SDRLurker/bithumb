@@ -44,6 +44,30 @@ def get_fear_and_greed_index():
          print(f"Failed to fetch Fear and Greed Index. Status code: {response.status_code}")
          return None
 
+def get_bitcoin_news():
+    serpapi_key = os.getenv("SERPAPI_API_KEY")
+    url = "https://serpapi.com/search.json"
+    params = {
+        "engine": "google_news",
+        "q": "btc",
+        "api_key": serpapi_key
+    }
+    try:
+        response = requests.get(url, params=params)
+        response.raise_for_status()  # Raises a HTTPError if the status is 4xx, 5xx
+        data = response.json()
+        news_results = data.get("news_results", [])
+        headlines = []
+        for item in news_results:
+            headlines.append({
+                "title": item.get("title", ""),
+                "date": item.get("date", "")
+            })
+        return headlines[:5]  # 최신 5개의 뉴스 헤드라인만 반환
+    except requests.RequestException as e:
+        print(f"Error fetching news: {e}")
+        return []
+
 def ai_trading():
     # Bithumb 객체 생성
     access = os.getenv("BITHUMB_ACCESS_KEY")
@@ -71,6 +95,9 @@ def ai_trading():
     # 4. 공포 탐욕 지수 가져오기
     fear_greed_index = get_fear_and_greed_index()
 
+    # 5. 뉴스 헤드라인 가져오기
+    news_headlines = get_bitcoin_news()
+
     # AI에게 데이터 제공하고 판단 받기
     API_KEY = os.getenv("GEMINI_API_KEY")
     BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
@@ -82,10 +109,8 @@ def ai_trading():
         {
         "role": "system",
         "content": """You are an expert in Bitcoin investing. Analyze the provided data including technical indicators and tell me whether to buy, sell, or hold at the moment. Consider the following indicators in your analysis:
-        - Bollinger Bands (bb_bbm, bb_bbh, bb_bbl)
-        - RSI (rsi)
-        - MACD (macd, macd_signal, macd_diff)
-        - Moving Averages (sma_20, ema_12)
+        - Technical indicators and market data
+        - Recent news headlines and their potential impact on Bitcoin price
         - The Fear and Greed Index and its implications
         - Overall market sentiment
         
@@ -102,6 +127,7 @@ def ai_trading():
 Orderbook: {json.dumps(orderbook)}
 Daily OHLCV with indicators (30 days): {df_daily.to_json()}
 Hourly OHLCV with indicators (24 hours): {df_hourly.to_json()}
+Recent news headlines: {json.dumps(news_headlines)}
 Fear and Greed Index: {json.dumps(fear_greed_index)}"""
         }
     ],

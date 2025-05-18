@@ -4,3 +4,4 @@ python-bithumb
 ta
 selenium
 webdriver-manager
+Pillow

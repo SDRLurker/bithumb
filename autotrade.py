@@ -9,6 +9,23 @@ import ta
 from ta.utils import dropna
 import time
 import requests
+import base64
+from PIL import Image
+import io
+from selenium import webdriver
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from webdriver_manager.chrome import ChromeDriverManager
+from selenium.common.exceptions import TimeoutException, ElementClickInterceptedException, WebDriverException
+import logging
+from datetime import datetime
+
+# 로깅 설정
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 load_dotenv()
 
@@ -41,7 +58,7 @@ def get_fear_and_greed_index():
          data = response.json()
          return data['data'][0]
      else:
-         print(f"Failed to fetch Fear and Greed Index. Status code: {response.status_code}")
+         logger.error(f"Failed to fetch Fear and Greed Index. Status code: {response.status_code}")
          return None
 
 def get_bitcoin_news():
@@ -54,7 +71,7 @@ def get_bitcoin_news():
     }
     try:
         response = requests.get(url, params=params)
-        response.raise_for_status()  # Raises a HTTPError if the status is 4xx, 5xx
+        response.raise_for_status()
         data = response.json()
         news_results = data.get("news_results", [])
         headlines = []
@@ -63,10 +80,107 @@ def get_bitcoin_news():
                 "title": item.get("title", ""),
                 "date": item.get("date", "")
             })
-        return headlines[:5]  # 최신 5개의 뉴스 헤드라인만 반환
+        return headlines[:5]
     except requests.RequestException as e:
-        print(f"Error fetching news: {e}")
+        logger.error(f"Error fetching news: {e}")
         return []
+
+def setup_chrome_options():
+    chrome_options = Options()
+    chrome_options.add_argument("--start-maximized")
+    chrome_options.add_argument("--headless")  # 디버깅을 위해 헤드리스 모드 비활성화
+    chrome_options.add_argument("--disable-gpu")
+    chrome_options.add_argument("--no-sandbox")
+    chrome_options.add_argument("--disable-dev-shm-usage")
+    chrome_options.add_experimental_option('excludeSwitches', ['enable-logging'])
+    return chrome_options
+
+def create_driver():
+    logger.info("ChromeDriver 설정 중...")
+    service = Service(ChromeDriverManager().install())
+    driver = webdriver.Chrome(service=service, options=setup_chrome_options())
+    return driver
+
+def click_element_by_xpath(driver, xpath, element_name, wait_time=10):
+    try:
+        element = WebDriverWait(driver, wait_time).until(
+            EC.element_to_be_clickable((By.XPATH, xpath))
+        )
+        element.click()
+        logger.info(f"{element_name} 클릭 완료")
+        time.sleep(2)  # 클릭 후 잠시 대기
+    except TimeoutException:
+        logger.error(f"{element_name} 요소를 찾는 데 시간이 초과되었습니다.")
+    except ElementClickInterceptedException:
+        logger.error(f"{element_name} 요소를 클릭할 수 없습니다. 다른 요소에 가려져 있을 수 있습니다.")
+    except Exception as e:
+        logger.error(f"{element_name} 클릭 중 오류 발생: {e}")
+
+def perform_chart_actions(driver):
+    # 시간 메뉴 클릭
+    click_element_by_xpath(
+        driver,
+        "/html/body/div[1]/div[2]/div[3]/span/div/div/div[1]/div/div/cq-menu[1]",
+        "시간 메뉴"
+    )
+    
+    # 1시간 옵션 선택
+    click_element_by_xpath(
+        driver,
+        "/html/body/div[1]/div[2]/div[3]/span/div/div/div[1]/div/div/cq-menu[1]/cq-menu-dropdown/cq-item[8]",
+        "1시간 옵션"
+    )
+    
+    # 지표 메뉴 클릭
+    click_element_by_xpath(
+        driver,
+        "/html/body/div[1]/div[2]/div[3]/span/div/div/div[1]/div/div/cq-menu[3]",
+        "지표 메뉴"
+    )
+    
+    # 볼린저 밴드 옵션 선택
+    click_element_by_xpath(
+        driver,
+        "/html/body/div[1]/div[2]/div[3]/span/div/div/div[1]/div/div/cq-menu[3]/cq-menu-dropdown/cq-scroll/cq-studies/cq-studies-content/cq-item[15]",
+        "볼린저 밴드 옵션"
+    )
+
+def capture_and_encode_screenshot(driver):
+    try:
+        # 스크린샷 캡처
+        png = driver.get_screenshot_as_png()
+        
+        # PIL Image로 변환
+        img = Image.open(io.BytesIO(png))
+        
+        # 이미지 리사이즈 (OpenAI API 제한에 맞춤)
+        img.thumbnail((2000, 2000))
+        
+        # 현재 시간을 파일명에 포함
+        current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"upbit_chart_{current_time}.png"
+        
+        # 현재 스크립트의 경로를 가져옴
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        
+        # 파일 저장 경로 설정
+        file_path = os.path.join(script_dir, filename)
+        
+        # 이미지 파일로 저장
+        img.save(file_path)
+        logger.info(f"스크린샷이 저장되었습니다: {file_path}")
+        
+        # 이미지를 바이트로 변환
+        buffered = io.BytesIO()
+        img.save(buffered, format="PNG")
+        
+        # base64로 인코딩
+        base64_image = base64.b64encode(buffered.getvalue()).decode('utf-8')
+        
+        return base64_image, file_path
+    except Exception as e:
+        logger.error(f"스크린샷 캡처 및 인코딩 중 오류 발생: {e}")
+        return None, None
 
 def ai_trading():
     # Bithumb 객체 생성
@@ -82,12 +196,10 @@ def ai_trading():
     orderbook = python_bithumb.get_orderbook("KRW-BTC")
     
     # 3. 차트 데이터 조회 및 보조지표 추가
-    # 30일 일봉 데이터
     df_daily = python_bithumb.get_ohlcv("KRW-BTC", interval="day", count=30)
     df_daily = dropna(df_daily)
     df_daily = add_indicators(df_daily)
     
-    # 24시간 시간봉 데이터
     df_hourly = python_bithumb.get_ohlcv("KRW-BTC", interval="minute60", count=24)
     df_hourly = dropna(df_hourly)
     df_hourly = add_indicators(df_hourly)
@@ -97,6 +209,28 @@ def ai_trading():
 
     # 5. 뉴스 헤드라인 가져오기
     news_headlines = get_bitcoin_news()
+
+    # Selenium으로 차트 캡처
+    driver = None
+    try:
+        driver = create_driver()
+        driver.get("https://upbit.com/full_chart?code=CRIX.UPBIT.KRW-BTC")
+        logger.info("페이지 로드 완료")
+        time.sleep(30)  # 페이지 로딩 대기 시간 증가
+        logger.info("차트 작업 시작")
+        perform_chart_actions(driver)
+        logger.info("차트 작업 완료")
+        chart_image, saved_file_path = capture_and_encode_screenshot(driver)
+        logger.info(f"스크린샷 캡처 완료. 저장된 파일 경로: {saved_file_path}")
+    except WebDriverException as e:
+        logger.error(f"WebDriver 오류 발생: {e}")
+        chart_image, saved_file_path = None, None
+    except Exception as e:
+        logger.error(f"차트 캡처 중 오류 발생: {e}")
+        chart_image, saved_file_path = None, None
+    finally:
+        if driver:
+            driver.quit()
 
     # AI에게 데이터 제공하고 판단 받기
     API_KEY = os.getenv("GEMINI_API_KEY")
@@ -108,11 +242,12 @@ def ai_trading():
     messages=[
         {
         "role": "system",
-        "content": """You are an expert in Bitcoin investing. Analyze the provided data including technical indicators and tell me whether to buy, sell, or hold at the moment. Consider the following indicators in your analysis:
+        "content": """You are an expert in Bitcoin investing. Analyze the provided data including technical indicators, market data, recent news headlines, the Fear and Greed Index, and the chart image. Tell me whether to buy, sell, or hold at the moment. Consider the following in your analysis:
         - Technical indicators and market data
         - Recent news headlines and their potential impact on Bitcoin price
         - The Fear and Greed Index and its implications
         - Overall market sentiment
+        - The patterns and trends visible in the chart image
         
         Response in json format.
 
@@ -123,22 +258,31 @@ def ai_trading():
         },
         {
         "role": "user",
-        "content": f"""Current investment status: {json.dumps(filtered_balances)}
+"content": [
+            {
+                "type": "text",
+                "text": f"""Current investment status: {json.dumps(filtered_balances)}
 Orderbook: {json.dumps(orderbook)}
 Daily OHLCV with indicators (30 days): {df_daily.to_json()}
 Hourly OHLCV with indicators (24 hours): {df_hourly.to_json()}
 Recent news headlines: {json.dumps(news_headlines)}
 Fear and Greed Index: {json.dumps(fear_greed_index)}"""
+            },
+            {
+                "type": "image_url",
+                "image_url": {
+                    "url": f"data:image/png;base64,{chart_image}"
+                }
+            }
+        ]
         }
     ],
-    response_format={
-        "type": "json_object"
-    }
+    max_tokens=300,
+    response_format={"type": "json_object"}
     )
     result = response.choices[0].message.content
 
-    # AI의 판단에 따라 실제로 자동매매 진행하기
-    result = json.loads(result)
+    result = json.loads(response.choices[0].message.content)
 
     my_krw = bithumb.get_balance("KRW")
     my_btc = bithumb.get_balance("BTC")
@@ -162,10 +306,13 @@ Fear and Greed Index: {json.dumps(fear_greed_index)}"""
     elif result["decision"] == "hold":
         print("### Hold Position ###")
 
-while True:
-    try:
-        ai_trading()
-        time.sleep(600) # 10분 간격으로 실행(너무 빈번한 API 호출 방지)
-    except Exception as e:
-        print(f"An error occurred: {e}")
-        time.sleep(60) # 오류 발생 시 1분 후 재시도
+ai_trading()
+
+# # Main loop
+# while True:
+#     try:
+#         ai_trading()
+#         time.sleep(3600 * 4)  # 4시간마다 실행
+#     except Exception as e:
+#         logger.error(f"An error occurred: {e}")
+#         time.sleep(300)  # 오류 발생 시 5분 후 재시도

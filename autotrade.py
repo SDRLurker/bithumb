@@ -23,12 +23,11 @@ from selenium.common.exceptions import TimeoutException, ElementClickIntercepted
 import logging
 from datetime import datetime
 from youtube_transcript_api import YouTubeTranscriptApi
-from pydantic import BaseModel
-from openai import OpenAI
+from pydantic import BaseModel, Field # Field 추가
 
 class TradingDecision(BaseModel):
-    decision: str
-    reason: str
+    decision: str = Field(..., description="매수, 매도, 또는 보유 중 하나")
+    reason: str = Field(..., description="결정에 대한 상세 이유")
 
 # 로깅 설정
 logging.basicConfig(level=logging.INFO)
@@ -264,91 +263,83 @@ def ai_trading():
     BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
     client = OpenAI(api_key=API_KEY, base_url=BASE_URL)
 
+    # TradingDecision 모델을 Tool로 정의
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "make_trading_decision",
+                "description": "비트코인 투자 결정을 내리고 그 이유를 설명합니다.",
+                "parameters": TradingDecision.model_json_schema()
+            }
+        }
+    ]
+
     response = client.chat.completions.create(
-    model="gemini-1.5-flash",
-    messages=[
-        {
-                "role": "system",
-                "content": """You are an expert in Bitcoin investing. Analyze the provided data including technical indicators, market data, recent news headlines, the Fear and Greed Index, YouTube video transcript, and the chart image. Tell me whether to buy, sell, or hold at the moment. Consider the following in your analysis:
-                - Technical indicators and market data
-                - Recent news headlines and their potential impact on Bitcoin price
-                - The Fear and Greed Index and its implications
-                - Overall market sentiment
-                - The patterns and trends visible in the chart image
-                - Insights from the YouTube video transcript
-                
-                Respond with a decision (buy, sell, or hold) and a reason for your decision.
-                
-                {
-                    "type": "json_schema",
-                    "json_schema": {
-                        "name": "trading_decision",
-                        "strict": True,
-                        "schema": {
-                            "type": "object",
-                            "properties": {
-                                "decision": {"type": "string", "enum": ["buy", "sell", "hold"]},
-                                "reason": {"type": "string"}
-                            },
-                            "required": ["decision", "reason"],
-                            "additionalProperties": False
-                        }
-                    }
-                }
-                """
-        },
-        {
-        "role": "user",
-        "content": [
+        model="gemini-1.5-flash",
+        messages=[
             {
-                "type": "text",
-                "text": f"""Current investment status: {json.dumps(filtered_balances)}
+                "role": "system",
+                "content": """You are an expert in Bitcoin investing. Analyze the provided data including technical indicators, market data, recent news headlines, the Fear and Greed Index, YouTube video transcript, and the chart image. Tell me whether to buy, sell, or hold at the moment. Your response must be a call to the 'make_trading_decision' function."""
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": f"""Current investment status: {json.dumps(filtered_balances)}
 Orderbook: {json.dumps(orderbook)}
 Daily OHLCV with indicators (30 days): {df_daily.to_json()}
 Hourly OHLCV with indicators (24 hours): {df_hourly.to_json()}
 Recent news headlines: {json.dumps(news_headlines)}
 Fear and Greed Index: {json.dumps(fear_greed_index)}
 Youtube Video Transcript: {youtube_transcript}"""
-            },
-            {
-                "type": "image_url",
-                "image_url": {
-                    "url": f"data:image/png;base64,{chart_image}"
-                }
+                    },
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:image/png;base64,{chart_image}"
+                        }
+                    }
+                ]
             }
-        ]}
-    ],
-    max_tokens=4095
+        ],
+        tools=tools, # 여기에 tools를 전달합니다
+        tool_choice={"type": "function", "function": {"name": "make_trading_decision"}}, # 이 도구를 사용하도록 강제
+        max_tokens=4095
     )
 
-    response_content = response.choices[0].message.content
-    if response_content.startswith("```json"):
-        response_content = response_content.strip().replace("```json\n", "").replace("\n```", "")
+    # 응답 처리
+    tool_calls = response.choices[0].message.tool_calls
+    if tool_calls and tool_calls[0].function.name == "make_trading_decision":
+        function_args = json.loads(tool_calls[0].function.arguments)
+        result = TradingDecision(**function_args) # Pydantic 모델로 직접 파싱
+        
+        my_krw = bithumb.get_balance("KRW")
+        my_btc = bithumb.get_balance("BTC")
 
-    # 최신 pydantic 메서드 사용
-    result = TradingDecision.model_validate_json(response_content)
+        print("### AI Decision: ", result.decision.upper(), "###")
+        print(f"### Reason: {result.reason} ###")
 
-    my_krw = bithumb.get_balance("KRW")
-    my_btc = bithumb.get_balance("BTC")
+        if result.decision == "buy":
+            if my_krw > 5000:
+                print("### Buy Order Executed ###")
+                bithumb.buy_market_order("KRW-BTC", my_krw*0.997)
+            else:
+                print("### Buy Order Failed: Insufficient KRW (less than 5000 KRW) ###")
+        elif result.decision == "sell":
+            current_price = python_bithumb.get_current_price(ticker="KRW-BTC")
+            if my_btc * current_price > 5000:
+                print("### Sell Order Executed ###")
+                bithumb.sell_market_order("KRW-BTC", my_btc*0.997)
+            else:
+                print("### Sell Order Failed: Insufficient BTC (less than 5000 KRW worth) ###")
+        elif result.decision == "hold":
+            print("### Hold Position ###")
+    else:
+        logger.error("AI가 예상된 형식(함수 호출)으로 응답하지 않았습니다.")
+        logger.error(f"AI Response: {response.choices[0].message.content}")
 
-    print("### AI Decision: ", result.decision.upper(), "###")
-    print(f"### Reason: {result.reason} ###")
-
-    if result.decision == "buy":
-        if my_krw > 5000:
-            print("### Buy Order Executed ###")
-            bithumb.buy_market_order("KRW-BTC", my_krw*0.997)
-        else:
-            print("### Buy Order Failed: Insufficient KRW (less than 5000 KRW) ###")
-    elif result.decision == "sell":
-        current_price = python_bithumb.get_current_price(ticker="KRW-BTC")
-        if my_btc * current_price > 5000:
-            print("### Sell Order Executed ###")
-            bithumb.sell_market_order("KRW-BTC", my_btc*0.997)
-        else:
-            print("### Sell Order Failed: Insufficient BTC (less than 5000 KRW worth) ###")
-    elif result.decision == "hold":
-        print("### Hold Position ###")
 
 ai_trading()
 

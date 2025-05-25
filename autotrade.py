@@ -23,10 +23,11 @@ from selenium.common.exceptions import TimeoutException, ElementClickIntercepted
 import logging
 from datetime import datetime
 from youtube_transcript_api import YouTubeTranscriptApi
-from pydantic import BaseModel, Field # Field 추가
+from pydantic import BaseModel, Field, conint # conint 추가
 
 class TradingDecision(BaseModel):
     decision: str = Field(..., description="매수, 매도, 또는 보유 중 하나")
+    percentage: conint(ge=0, le=100) = Field(..., description="매수 또는 매도할 자산(KRW 또는 BTC)의 비율 (0-100 정수). 보유(hold) 결정 시에는 반드시 0이어야 합니다.")
     reason: str = Field(..., description="결정에 대한 상세 이유")
 
 # 로깅 설정
@@ -280,7 +281,23 @@ def ai_trading():
         messages=[
             {
                 "role": "system",
-                "content": """You are an expert in Bitcoin investing. Analyze the provided data including technical indicators, market data, recent news headlines, the Fear and Greed Index, YouTube video transcript, and the chart image. Tell me whether to buy, sell, or hold at the moment. Your response must be a call to the 'make_trading_decision' function."""
+                "content": """You are an expert in Bitcoin investing. Analyze the provided data including technical indicators, market data, recent news headlines, the Fear and Greed Index, YouTube video transcript, and the chart image. Tell me whether to buy, sell, or hold at the moment. Consider the following in your analysis:
+                - Technical indicators and market data
+                - Recent news headlines and their potential impact on Bitcoin price
+                - The Fear and Greed Index and its implications
+                - Overall market sentiment
+                - The patterns and trends visible in the chart image
+                - Insights from the YouTube video transcript
+
+                Respond with:
+                1. A decision (buy, sell, or hold)
+                2. If the decision is 'buy', provide a percentage (1-100) of available KRW to use for buying.
+                If the decision is 'sell', provide a percentage (1-100) of held BTC to sell.
+                If the decision is 'hold', set the percentage to 0.
+                3. A reason for your decision
+                
+                Ensure that the percentage is an integer between 1 and 100 for buy/sell decisions, and exactly 0 for hold decisions.
+                Your percentage should reflect the strength of your conviction in the decision based on the analyzed data."""
             },
             {
                 "role": "user",
@@ -314,6 +331,11 @@ Youtube Video Transcript: {youtube_transcript}"""
     if tool_calls and tool_calls[0].function.name == "make_trading_decision":
         function_args = json.loads(tool_calls[0].function.arguments)
         result = TradingDecision(**function_args) # Pydantic 모델로 직접 파싱
+
+        # 보유(hold) 결정일 경우 percentage를 0으로 강제
+        if result.decision == "hold" and result.percentage != 0:
+            logger.warning(f"AI가 보유(hold) 결정에 대해 percentage를 {result.percentage}로 반환했습니다. 0으로 강제합니다.")
+            result.percentage = 0
         
         my_krw = bithumb.get_balance("KRW")
         my_btc = bithumb.get_balance("BTC")
@@ -322,16 +344,18 @@ Youtube Video Transcript: {youtube_transcript}"""
         print(f"### Reason: {result.reason} ###")
 
         if result.decision == "buy":
-            if my_krw > 5000:
-                print("### Buy Order Executed ###")
-                bithumb.buy_market_order("KRW-BTC", my_krw*0.997)
+            buy_amount = my_krw * (result.percentage / 100.0) * 0.9995 
+            if buy_amount > 5000:
+                print(f"### Buy Order Executed : {result.percentage}% of available KRW###")
+                bithumb.buy_market_order("KRW-BTC", buy_amount)
             else:
                 print("### Buy Order Failed: Insufficient KRW (less than 5000 KRW) ###")
         elif result.decision == "sell":
+            sell_amount = my_btc * (result.percentage / 100.0)
             current_price = python_bithumb.get_current_price(ticker="KRW-BTC")
-            if my_btc * current_price > 5000:
-                print("### Sell Order Executed ###")
-                bithumb.sell_market_order("KRW-BTC", my_btc*0.997)
+            if my_btc*current_price > 5000:
+                print(f"### Sell Order Executed: {result.percentage}% of held BTC ###")
+                bithumb.sell_market_order("KRW-BTC", sell_amount)
             else:
                 print("### Sell Order Failed: Insufficient BTC (less than 5000 KRW worth) ###")
         elif result.decision == "hold":

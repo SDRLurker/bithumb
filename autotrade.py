@@ -24,11 +24,43 @@ import logging
 from datetime import datetime
 from youtube_transcript_api import YouTubeTranscriptApi
 from pydantic import BaseModel, Field, conint # conint 추가
+import sqlite3
 
 class TradingDecision(BaseModel):
     decision: str = Field(..., description="매수, 매도, 또는 보유 중 하나")
     percentage: conint(ge=0, le=100) = Field(..., description="매수 또는 매도할 자산(KRW 또는 BTC)의 비율 (0-100 정수). 보유(hold) 결정 시에는 반드시 0이어야 합니다.")
     reason: str = Field(..., description="결정에 대한 상세 이유")
+
+def init_db():
+    conn = sqlite3.connect('bitcoin_trades.db')
+    c = conn.cursor()
+    c.execute('''CREATE TABLE IF NOT EXISTS trades
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  timestamp TEXT,
+                  decision TEXT,
+                  percentage INTEGER,
+                  reason TEXT,
+                  btc_balance REAL,
+                  krw_balance REAL,
+                  btc_avg_buy_price REAL,
+                  btc_krw_price REAL)''')
+    conn.commit()
+    return conn
+
+def log_trade(conn, decision, percentage, reason, btc_balance, krw_balance, btc_avg_buy_price, btc_krw_price):
+    c = conn.cursor()
+    timestamp = datetime.now().isoformat()
+    c.execute("""INSERT INTO trades 
+                 (timestamp, decision, percentage, reason, btc_balance, krw_balance, btc_avg_buy_price, btc_krw_price) 
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+              (timestamp, decision, percentage, reason, btc_balance, krw_balance, btc_avg_buy_price, btc_krw_price))
+    conn.commit()
+
+def get_db_connection():
+    return sqlite3.connect('bitcoin_trades.db')
+
+# 데이터베이스 초기화
+init_db()
 
 # 로깅 설정
 logging.basicConfig(level=logging.INFO)
@@ -347,14 +379,22 @@ Fear and Greed Index: {json.dumps(fear_greed_index)}"""
         my_krw = bithumb.get_balance("KRW")
         my_btc = bithumb.get_balance("BTC")
 
+        # 데이터베이스 연결More actions
+        conn = get_db_connection()
+
         print("### AI Decision: ", result.decision.upper(), "###")
         print(f"### Reason: {result.reason} ###")
+
+        order_executed = False
 
         if result.decision == "buy":
             buy_amount = my_krw * (result.percentage / 100.0) * 0.9995 
             if buy_amount > 5000:
                 print(f"### Buy Order Executed : {result.percentage}% of available KRW###")
-                bithumb.buy_market_order("KRW-BTC", buy_amount)
+                order_info = bithumb.buy_market_order("KRW-BTC", buy_amount)
+                if order_info['status'] == '0000':
+                    order_executed = True 
+                print(order)
             else:
                 print("### Buy Order Failed: Insufficient KRW (less than 5000 KRW) ###")
         elif result.decision == "sell":
@@ -362,7 +402,10 @@ Fear and Greed Index: {json.dumps(fear_greed_index)}"""
             current_price = python_bithumb.get_current_price(ticker="KRW-BTC")
             if my_btc*current_price > 5000:
                 print(f"### Sell Order Executed: {result.percentage}% of held BTC ###")
-                bithumb.sell_market_order("KRW-BTC", sell_amount)
+                order_info = bithumb.sell_market_order("KRW-BTC", sell_amount)
+                if order_info['status'] == '0000':
+                    order_executed = True 
+                print(order)
             else:
                 print("### Sell Order Failed: Insufficient BTC (less than 5000 KRW worth) ###")
         elif result.decision == "hold":
@@ -372,13 +415,11 @@ Fear and Greed Index: {json.dumps(fear_greed_index)}"""
         logger.error(f"AI Response: {response.choices[0].message.content}")
 
 
-ai_trading()
-
-# # Main loop
-# while True:
-#     try:
-#         ai_trading()
-#         time.sleep(3600 * 4)  # 4시간마다 실행
-#     except Exception as e:
-#         logger.error(f"An error occurred: {e}")
-#         time.sleep(300)  # 오류 발생 시 5분 후 재시도
+# Main loop
+while True:
+    try:
+        ai_trading()
+        time.sleep(3600 * 4)  # 4시간마다 실행
+    except Exception as e:
+        logger.error(f"An error occurred: {e}")
+        time.sleep(300)  # 오류 발생 시 5분 후 재시도
